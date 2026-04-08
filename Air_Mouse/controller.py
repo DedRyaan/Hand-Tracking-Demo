@@ -159,7 +159,7 @@ class AirMouseController:
 
         mode = self._config.interaction_mode
         if mode == "two_hand":
-            self._handle_clicks_two_hand(secondary_gesture, actions)
+            self._handle_clicks_two_hand(secondary_hand, secondary_gesture, actions)
         elif mode == "dwell":
             self._handle_clicks_dwell(primary_gesture, actions)
         else:
@@ -455,16 +455,27 @@ class AirMouseController:
 
     def _handle_clicks_two_hand(
         self,
+        secondary_hand: HandState | None,
         secondary_gesture: HandGestureState | None,
         actions: list[str],
     ) -> None:
-        if secondary_gesture is None:
+        if secondary_hand is None or secondary_gesture is None:
             self._reset_pinch_state()
             if self._drag_active:
                 self._mouse.release(Button.left)
                 self._drag_active = False
                 self._remember_action("Drag end")
             return
+
+        side = self._normalize_side(secondary_hand.side)
+        if side != "Left":
+            self._reset_pinch_state()
+            if self._drag_active:
+                self._mouse.release(Button.left)
+                self._drag_active = False
+                self._remember_action("Drag end")
+            return
+
         self._handle_clicks_pinch(secondary_gesture, actions, freeze_cursor=True)
 
     def _handle_clicks_dwell(
