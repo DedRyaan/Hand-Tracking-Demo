@@ -101,6 +101,7 @@ python -m Air_Mouse.main --interaction two_hand
 - `Open palm (front to camera)` -> free pointer movement (no shortcut)
 - Pointer mapping now focuses on a smaller center camera region (boosted mapping), so you do not need to use the entire camera FOV to reach the full screen.
 - Click intent now applies micro-movement damping, pinch hysteresis, and freeze windows for more reliable click registration.
+- Stable one-hand mode now clicks on pinch-release (after hysteresis + tiny debounce) to minimize cursor jumps while pinching.
 
 Interaction modes:
 

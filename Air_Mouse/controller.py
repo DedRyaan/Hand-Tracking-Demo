@@ -35,7 +35,7 @@ class AirMouseConfig:
     pinch_release_left_ratio: float = 0.72
     pinch_press_right_ratio: float = 0.58
     pinch_release_right_ratio: float = 0.74
-    pinch_min_active_sec: float = 0.035
+    pinch_min_active_sec: float = 0.015
     click_cooldown_sec: float = 0.16
     click_cursor_lock_sec: float = 0.14
     dwell_click_sec: float = 0.55
@@ -360,13 +360,18 @@ class AirMouseController:
         right_press = gesture.middle_thumb_ratio <= float(self._config.pinch_press_right_ratio)
         right_release = gesture.middle_thumb_ratio >= float(self._config.pinch_release_right_ratio)
 
+        left_release_event = False
+        right_release_event = False
+
         if left_press:
             if self._left_pinch_down_since <= 0.0:
                 self._left_pinch_down_since = now
             if (now - self._left_pinch_down_since) >= float(self._config.pinch_min_active_sec):
                 self._left_pinch_armed = True
         elif left_release:
+            left_release_event = self._left_pinch_armed
             self._left_pinch_down_since = 0.0
+            self._left_pinch_armed = False
 
         if right_press:
             if self._right_pinch_down_since <= 0.0:
@@ -374,13 +379,23 @@ class AirMouseController:
             if (now - self._right_pinch_down_since) >= float(self._config.pinch_min_active_sec):
                 self._right_pinch_armed = True
         elif right_release:
+            right_release_event = self._right_pinch_armed
             self._right_pinch_down_since = 0.0
+            self._right_pinch_armed = False
 
-        dual_pinch = self._left_pinch_armed and self._right_pinch_armed
-        if dual_pinch:
+        dual_pinch_live = self._left_pinch_armed and self._right_pinch_armed
+        if dual_pinch_live:
             self._dual_pinch_active = True
 
-        if freeze_cursor and (self._left_pinch_armed or self._right_pinch_armed or self._dual_pinch_active):
+        pinch_contact = (
+            left_press
+            or right_press
+            or self._left_pinch_armed
+            or self._right_pinch_armed
+            or self._dual_pinch_active
+        )
+
+        if freeze_cursor and pinch_contact:
             self._cursor_lock_until = max(
                 self._cursor_lock_until,
                 now + float(self._config.click_cursor_lock_sec),
@@ -388,15 +403,13 @@ class AirMouseController:
 
         if (
             self._dual_pinch_active
-            and left_release
-            and right_release
+            and left_release_event
+            and right_release_event
             and not self._drag_active
             and self._check_cooldown("double_click", now, self._config.click_cooldown_sec)
         ):
             self._mouse.click(Button.left, 2)
             self._note_action(actions, "Double click")
-            self._left_pinch_armed = False
-            self._right_pinch_armed = False
             self._dual_pinch_active = False
 
         if gesture.fist and not self._drag_active:
@@ -417,31 +430,23 @@ class AirMouseController:
             self._note_action(actions, "Drag end")
 
         if (
-            self._left_pinch_armed
-            and left_release
+            left_release_event
             and not self._drag_active
             and not self._dual_pinch_active
             and self._check_cooldown("left_click", now, self._config.click_cooldown_sec)
         ):
             self._mouse.click(Button.left, 1)
             self._note_action(actions, "Left click")
-            self._left_pinch_armed = False
 
         if (
-            self._right_pinch_armed
-            and right_release
+            right_release_event
             and not self._dual_pinch_active
             and self._check_cooldown("right_click", now, self._config.click_cooldown_sec)
         ):
             self._mouse.click(Button.right, 1)
             self._note_action(actions, "Right click")
-            self._right_pinch_armed = False
 
-        if left_release:
-            self._left_pinch_armed = False
-        if right_release:
-            self._right_pinch_armed = False
-        if left_release and right_release:
+        if left_release_event and right_release_event:
             self._dual_pinch_active = False
 
         self._left_pinch_prev = self._left_pinch_armed
