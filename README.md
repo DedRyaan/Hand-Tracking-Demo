@@ -24,7 +24,7 @@ A real-time hand tracking desktop app with:
 1. Open a terminal in this folder:
 
 ```bash
-cd "OneDrive/Desktop/opencode-folder-2026-04-08"
+cd "./Hand-Tracking-Demo"
 ```
 
 2. (Recommended) create and activate a virtual environment:
