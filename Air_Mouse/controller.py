@@ -41,6 +41,8 @@ class AirMouseConfig:
     dwell_click_sec: float = 0.55
     dwell_radius_px: float = 16.0
     dwell_rearm_move_px: float = 30.0
+    knuckle_tap_depth_delta_m: float = 0.014
+    knuckle_tap_rearm_m: float = 0.008
     shortcut_cooldown_sec: float = 1.0
     desktop_hold_sec: float = 0.3
     strict_hand_selection: bool = True
@@ -73,6 +75,8 @@ class AirMouseController:
         self._dwell_anchor: np.ndarray | None = None
         self._dwell_start = 0.0
         self._dwell_fired = False
+        self._knuckle_tap_armed = True
+        self._knuckle_baseline_z: float | None = None
 
         self._gesture_prev: dict[str, bool] = {}
         self._gesture_last_fire: dict[str, float] = {}
@@ -161,7 +165,7 @@ class AirMouseController:
         if mode == "two_hand":
             self._handle_clicks_two_hand(secondary_hand, secondary_gesture, actions)
         elif mode == "dwell":
-            self._handle_clicks_dwell(primary_gesture, actions)
+            self._handle_clicks_dwell(primary_hand, primary_gesture, actions)
         else:
             self._handle_clicks_pinch(primary_gesture, actions, freeze_cursor=True)
 
@@ -190,6 +194,8 @@ class AirMouseController:
         self._dwell_anchor = None
         self._dwell_start = 0.0
         self._dwell_fired = False
+        self._knuckle_tap_armed = True
+        self._knuckle_baseline_z = None
         self._cursor_lock_until = 0.0
         self._filtered_cursor = None
         self._cursor_history.clear()
@@ -480,6 +486,7 @@ class AirMouseController:
 
     def _handle_clicks_dwell(
         self,
+        primary_hand: HandState,
         primary_gesture: HandGestureState,
         actions: list[str],
     ) -> None:
@@ -530,6 +537,47 @@ class AirMouseController:
                     self._cursor_lock_until,
                     now + float(self._config.click_cursor_lock_sec),
                 )
+
+        self._handle_knuckle_tap(primary_hand, primary_gesture, actions)
+
+    def _handle_knuckle_tap(
+        self,
+        primary_hand: HandState,
+        primary_gesture: HandGestureState,
+        actions: list[str],
+    ) -> None:
+        if primary_gesture.fist:
+            self._knuckle_baseline_z = None
+            self._knuckle_tap_armed = True
+            return
+
+        index_tip = primary_hand.camera_vertices[8]
+        index_knuckle = primary_hand.camera_vertices[5]
+        depth_delta = float(index_knuckle[2] - index_tip[2])
+
+        if self._knuckle_baseline_z is None:
+            self._knuckle_baseline_z = depth_delta
+            return
+
+        self._knuckle_baseline_z = 0.9 * self._knuckle_baseline_z + 0.1 * depth_delta
+        trigger_delta = float(self._config.knuckle_tap_depth_delta_m)
+        rearm_delta = float(self._config.knuckle_tap_rearm_m)
+
+        if (
+            self._knuckle_tap_armed
+            and depth_delta > (self._knuckle_baseline_z + trigger_delta)
+            and self._check_cooldown("knuckle_tap_click", time.monotonic(), self._config.click_cooldown_sec)
+        ):
+            self._mouse.click(Button.left, 1)
+            self._note_action(actions, "Knuckle tap click")
+            self._knuckle_tap_armed = False
+            self._cursor_lock_until = max(
+                self._cursor_lock_until,
+                time.monotonic() + float(self._config.click_cursor_lock_sec),
+            )
+
+        if depth_delta < (self._knuckle_baseline_z + rearm_delta):
+            self._knuckle_tap_armed = True
 
     def _handle_shortcuts(
         self,

@@ -107,7 +107,7 @@ Interaction modes:
 
 - `--interaction pinch` (default): one-hand pointer + pinch clicks with anti-jitter freeze.
 - `--interaction two_hand`: right hand controls pointer, left hand handles click gestures/shortcuts.
-- `--interaction dwell`: hold pointer steady for dwell-click (no pinch needed).
+- `--interaction dwell`: hold pointer steady for dwell-click (no pinch needed), with optional index knuckle-tap click.
 
 Shortcut gestures (edge-triggered + cooldown protected):
 
