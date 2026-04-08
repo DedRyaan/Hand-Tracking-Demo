@@ -64,6 +64,13 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "gpu", "cpu"],
         help="MediaPipe inference delegate: auto, gpu, cpu",
     )
+    parser.add_argument(
+        "--interaction",
+        type=str,
+        default="pinch",
+        choices=["pinch", "two_hand", "dwell"],
+        help="Click interaction mode: pinch, two_hand, dwell",
+    )
     return parser.parse_args()
 
 
@@ -76,6 +83,7 @@ class AirMouseWindow(QMainWindow):
         control_hand: str = "right",
         mirror_x: bool = True,
         delegate: str = "auto",
+        interaction_mode: str = "pinch",
     ) -> None:
         super().__init__()
         self.setWindowTitle("Air Mouse Studio")
@@ -92,6 +100,7 @@ class AirMouseWindow(QMainWindow):
         self._controller = AirMouseController(
             AirMouseConfig(
                 control_hand_preference=control_hand,
+                interaction_mode=interaction_mode,
                 mirror_x=mirror_x,
                 swap_handedness_labels=False,
                 strict_hand_selection=True,
@@ -140,6 +149,11 @@ class AirMouseWindow(QMainWindow):
         self._control_combo.currentTextChanged.connect(self._on_control_hand_changed)
         self._set_control_combo_selection(control_hand)
 
+        self._interaction_combo = QComboBox()
+        self._interaction_combo.addItems(["pinch", "two_hand", "dwell"])
+        self._interaction_combo.currentTextChanged.connect(self._on_interaction_mode_changed)
+        self._set_interaction_combo_selection(interaction_mode)
+
         shortcuts = "\n".join(f"- {line}" for line in AirMouseController.shortcut_reference())
         self._shortcuts_label = QLabel(
             "Mouse controls\n"
@@ -155,6 +169,10 @@ class AirMouseWindow(QMainWindow):
             "Click stability\n"
             "- Pointer micro-jitter is damped during pinch/fist click intent\n"
             "- Pinch click uses a tiny hold confirm for reliable activation\n\n"
+            "Interaction modes\n"
+            "- pinch: one-hand pinch clicks with freeze+hysteresis\n"
+            "- two_hand: primary hand moves pointer, other hand clicks\n"
+            "- dwell: hold pointer steady to click (no pinch needed)\n\n"
             "Shortcuts\n"
             "- Open palm (front) is free movement only\n"
             "- Show desktop requires German three sign + short hold\n"
@@ -245,6 +263,9 @@ class AirMouseWindow(QMainWindow):
         controls_layout.addSpacing(10)
         controls_layout.addWidget(QLabel("Pointer"))
         controls_layout.addWidget(self._control_combo)
+        controls_layout.addSpacing(10)
+        controls_layout.addWidget(QLabel("Interaction"))
+        controls_layout.addWidget(self._interaction_combo)
         controls_layout.addStretch(1)
 
         right_layout.addWidget(controls)
@@ -305,6 +326,13 @@ class AirMouseWindow(QMainWindow):
         if idx >= 0:
             self._control_combo.setCurrentIndex(idx)
         self._control_combo.blockSignals(False)
+
+    def _set_interaction_combo_selection(self, interaction_mode: str) -> None:
+        self._interaction_combo.blockSignals(True)
+        idx = self._interaction_combo.findText(interaction_mode.lower())
+        if idx >= 0:
+            self._interaction_combo.setCurrentIndex(idx)
+        self._interaction_combo.blockSignals(False)
 
     def _apply_capture_profile(self) -> None:
         width, height, fps = self._capture_profile
@@ -407,6 +435,9 @@ class AirMouseWindow(QMainWindow):
     def _on_control_hand_changed(self, hand_name: str) -> None:
         self._controller.set_control_hand_preference(hand_name)
 
+    def _on_interaction_mode_changed(self, mode_name: str) -> None:
+        self._controller.set_interaction_mode(mode_name)
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._timer.stop()
         self._camera.release()
@@ -431,6 +462,7 @@ def main() -> int:
             control_hand=args.control_hand,
             mirror_x=not args.no_mirror,
             delegate=args.delegate,
+            interaction_mode=args.interaction,
         )
     except RuntimeError as exc:
         QMessageBox.critical(None, "Air Mouse Error", str(exc))

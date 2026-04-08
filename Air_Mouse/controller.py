@@ -22,6 +22,7 @@ from .gestures import HandGestureState, classify_hand_gesture, index_tip_xy, pal
 @dataclass
 class AirMouseConfig:
     control_hand_preference: str = "right"
+    interaction_mode: str = "pinch"
     swap_handedness_labels: bool = False
     mirror_x: bool = True
     cursor_smoothing_alpha: float = 0.22
@@ -30,9 +31,16 @@ class AirMouseConfig:
     pointer_history_size: int = 5
     active_region_padding: float = 0.42
     pinch_freeze_deadzone_px: float = 11.0
-    pinch_click_confirm_ms: float = 0.055
+    pinch_press_left_ratio: float = 0.56
+    pinch_release_left_ratio: float = 0.72
+    pinch_press_right_ratio: float = 0.58
+    pinch_release_right_ratio: float = 0.74
+    pinch_min_active_sec: float = 0.035
     click_cooldown_sec: float = 0.16
     click_cursor_lock_sec: float = 0.14
+    dwell_click_sec: float = 0.55
+    dwell_radius_px: float = 16.0
+    dwell_rearm_move_px: float = 30.0
     shortcut_cooldown_sec: float = 1.0
     desktop_hold_sec: float = 0.3
     strict_hand_selection: bool = True
@@ -56,8 +64,15 @@ class AirMouseController:
         self._left_pinch_prev = False
         self._middle_pinch_prev = False
         self._dual_pinch_prev = False
-        self._left_pinch_started_at = 0.0
-        self._middle_pinch_started_at = 0.0
+        self._left_pinch_armed = False
+        self._right_pinch_armed = False
+        self._left_pinch_down_since = 0.0
+        self._right_pinch_down_since = 0.0
+        self._dual_pinch_active = False
+
+        self._dwell_anchor: np.ndarray | None = None
+        self._dwell_start = 0.0
+        self._dwell_fired = False
 
         self._gesture_prev: dict[str, bool] = {}
         self._gesture_last_fire: dict[str, float] = {}
@@ -105,6 +120,13 @@ class AirMouseController:
         self._last_primary_side = "--"
         self.on_no_hands()
 
+    def set_interaction_mode(self, interaction_mode: str) -> None:
+        mode = interaction_mode.lower().strip()
+        if mode not in {"pinch", "two_hand", "dwell"}:
+            return
+        self._config.interaction_mode = mode
+        self.on_no_hands()
+
     @property
     def last_primary_side(self) -> str:
         return self._last_primary_side
@@ -112,6 +134,10 @@ class AirMouseController:
     @property
     def drag_active(self) -> bool:
         return self._drag_active
+
+    @property
+    def interaction_mode(self) -> str:
+        return self._config.interaction_mode
 
     def latest_action(self) -> str:
         if time.monotonic() - self._last_action_time > 2.8:
@@ -131,11 +157,23 @@ class AirMouseController:
         primary_gesture = classify_hand_gesture(primary_hand)
         secondary_gesture = classify_hand_gesture(secondary_hand) if secondary_hand is not None else None
 
-        self._handle_clicks(primary_gesture, actions)
+        mode = self._config.interaction_mode
+        if mode == "two_hand":
+            self._handle_clicks_two_hand(secondary_gesture, actions)
+        elif mode == "dwell":
+            self._handle_clicks_dwell(primary_gesture, actions)
+        else:
+            self._handle_clicks_pinch(primary_gesture, actions, freeze_cursor=True)
+
         self._move_cursor(primary_hand, primary_gesture)
 
-        shortcut_hand = secondary_hand if secondary_hand is not None else primary_hand
-        shortcut_source = secondary_gesture if secondary_gesture is not None else primary_gesture
+        if mode == "two_hand" and secondary_hand is not None and secondary_gesture is not None:
+            shortcut_hand = secondary_hand
+            shortcut_source = secondary_gesture
+        else:
+            shortcut_hand = secondary_hand if secondary_hand is not None else primary_hand
+            shortcut_source = secondary_gesture if secondary_gesture is not None else primary_gesture
+
         self._handle_shortcuts(shortcut_hand, shortcut_source, actions)
 
         return actions
@@ -144,8 +182,14 @@ class AirMouseController:
         self._left_pinch_prev = False
         self._middle_pinch_prev = False
         self._dual_pinch_prev = False
-        self._left_pinch_started_at = 0.0
-        self._middle_pinch_started_at = 0.0
+        self._left_pinch_armed = False
+        self._right_pinch_armed = False
+        self._left_pinch_down_since = 0.0
+        self._right_pinch_down_since = 0.0
+        self._dual_pinch_active = False
+        self._dwell_anchor = None
+        self._dwell_start = 0.0
+        self._dwell_fired = False
         self._cursor_lock_until = 0.0
         self._filtered_cursor = None
         self._cursor_history.clear()
@@ -270,13 +314,19 @@ class AirMouseController:
             if motion < float(self._config.cursor_deadzone_px):
                 alpha = min(alpha, 0.08)
 
-            click_intent = (
-                gesture.index_thumb_ratio < 0.70
-                or gesture.middle_thumb_ratio < 0.72
-                or gesture.fist
-            )
+            click_intent = False
+            if self._config.interaction_mode in {"pinch", "two_hand"}:
+                click_intent = (
+                    self._left_pinch_armed
+                    or self._right_pinch_armed
+                    or self._dual_pinch_active
+                    or gesture.fist
+                )
+            elif self._config.interaction_mode == "dwell":
+                click_intent = self._dwell_start > 0.0
+
             if click_intent and motion < float(self._config.pinch_freeze_deadzone_px):
-                alpha = min(alpha, 0.05)
+                alpha = min(alpha, 0.03)
 
             self._filtered_cursor = (1.0 - alpha) * self._filtered_cursor + alpha * target
 
@@ -287,43 +337,67 @@ class AirMouseController:
         )
         self._mouse.position = int(cursor[0]), int(cursor[1])
 
-    def _handle_clicks(self, gesture: HandGestureState, actions: list[str]) -> None:
+    def _reset_pinch_state(self) -> None:
+        self._left_pinch_prev = False
+        self._middle_pinch_prev = False
+        self._dual_pinch_prev = False
+        self._left_pinch_armed = False
+        self._right_pinch_armed = False
+        self._left_pinch_down_since = 0.0
+        self._right_pinch_down_since = 0.0
+        self._dual_pinch_active = False
+
+    def _handle_clicks_pinch(
+        self,
+        gesture: HandGestureState,
+        actions: list[str],
+        freeze_cursor: bool,
+    ) -> None:
         now = time.monotonic()
 
-        if gesture.index_thumb_ratio < 0.70:
-            if self._left_pinch_started_at <= 0.0:
-                self._left_pinch_started_at = now
-        else:
-            self._left_pinch_started_at = 0.0
+        left_press = gesture.index_thumb_ratio <= float(self._config.pinch_press_left_ratio)
+        left_release = gesture.index_thumb_ratio >= float(self._config.pinch_release_left_ratio)
+        right_press = gesture.middle_thumb_ratio <= float(self._config.pinch_press_right_ratio)
+        right_release = gesture.middle_thumb_ratio >= float(self._config.pinch_release_right_ratio)
 
-        if gesture.middle_thumb_ratio < 0.72:
-            if self._middle_pinch_started_at <= 0.0:
-                self._middle_pinch_started_at = now
-        else:
-            self._middle_pinch_started_at = 0.0
+        if left_press:
+            if self._left_pinch_down_since <= 0.0:
+                self._left_pinch_down_since = now
+            if (now - self._left_pinch_down_since) >= float(self._config.pinch_min_active_sec):
+                self._left_pinch_armed = True
+        elif left_release:
+            self._left_pinch_down_since = 0.0
 
-        left_confirmed = (
-            self._left_pinch_started_at > 0.0
-            and (now - self._left_pinch_started_at) >= float(self._config.pinch_click_confirm_ms)
-        )
-        right_confirmed = (
-            self._middle_pinch_started_at > 0.0
-            and (now - self._middle_pinch_started_at) >= float(self._config.pinch_click_confirm_ms)
-        )
+        if right_press:
+            if self._right_pinch_down_since <= 0.0:
+                self._right_pinch_down_since = now
+            if (now - self._right_pinch_down_since) >= float(self._config.pinch_min_active_sec):
+                self._right_pinch_armed = True
+        elif right_release:
+            self._right_pinch_down_since = 0.0
 
-        dual_pinch = left_confirmed and right_confirmed
-        if (
-            dual_pinch
-            and not self._dual_pinch_prev
-            and not self._drag_active
-            and self._check_cooldown("double_click", now, self._config.click_cooldown_sec)
-        ):
-            self._mouse.click(Button.left, 2)
+        dual_pinch = self._left_pinch_armed and self._right_pinch_armed
+        if dual_pinch:
+            self._dual_pinch_active = True
+
+        if freeze_cursor and (self._left_pinch_armed or self._right_pinch_armed or self._dual_pinch_active):
             self._cursor_lock_until = max(
                 self._cursor_lock_until,
                 now + float(self._config.click_cursor_lock_sec),
             )
+
+        if (
+            self._dual_pinch_active
+            and left_release
+            and right_release
+            and not self._drag_active
+            and self._check_cooldown("double_click", now, self._config.click_cooldown_sec)
+        ):
+            self._mouse.click(Button.left, 2)
             self._note_action(actions, "Double click")
+            self._left_pinch_armed = False
+            self._right_pinch_armed = False
+            self._dual_pinch_active = False
 
         if gesture.fist and not self._drag_active:
             self._mouse.press(Button.left)
@@ -343,35 +417,103 @@ class AirMouseController:
             self._note_action(actions, "Drag end")
 
         if (
-            left_confirmed
-            and not self._left_pinch_prev
+            self._left_pinch_armed
+            and left_release
             and not self._drag_active
-            and not dual_pinch
+            and not self._dual_pinch_active
             and self._check_cooldown("left_click", now, self._config.click_cooldown_sec)
         ):
             self._mouse.click(Button.left, 1)
-            self._cursor_lock_until = max(
-                self._cursor_lock_until,
-                now + float(self._config.click_cursor_lock_sec),
-            )
             self._note_action(actions, "Left click")
+            self._left_pinch_armed = False
 
         if (
-            right_confirmed
-            and not self._middle_pinch_prev
-            and not dual_pinch
+            self._right_pinch_armed
+            and right_release
+            and not self._dual_pinch_active
             and self._check_cooldown("right_click", now, self._config.click_cooldown_sec)
         ):
             self._mouse.click(Button.right, 1)
-            self._cursor_lock_until = max(
-                self._cursor_lock_until,
-                now + float(self._config.click_cursor_lock_sec),
-            )
             self._note_action(actions, "Right click")
+            self._right_pinch_armed = False
 
-        self._left_pinch_prev = left_confirmed
-        self._middle_pinch_prev = right_confirmed
-        self._dual_pinch_prev = dual_pinch
+        if left_release:
+            self._left_pinch_armed = False
+        if right_release:
+            self._right_pinch_armed = False
+        if left_release and right_release:
+            self._dual_pinch_active = False
+
+        self._left_pinch_prev = self._left_pinch_armed
+        self._middle_pinch_prev = self._right_pinch_armed
+        self._dual_pinch_prev = self._dual_pinch_active
+
+    def _handle_clicks_two_hand(
+        self,
+        secondary_gesture: HandGestureState | None,
+        actions: list[str],
+    ) -> None:
+        if secondary_gesture is None:
+            self._reset_pinch_state()
+            if self._drag_active:
+                self._mouse.release(Button.left)
+                self._drag_active = False
+                self._remember_action("Drag end")
+            return
+        self._handle_clicks_pinch(secondary_gesture, actions, freeze_cursor=True)
+
+    def _handle_clicks_dwell(
+        self,
+        primary_gesture: HandGestureState,
+        actions: list[str],
+    ) -> None:
+        self._reset_pinch_state()
+        if self._drag_active:
+            self._mouse.release(Button.left)
+            self._drag_active = False
+            self._remember_action("Drag end")
+
+        now = time.monotonic()
+        if self._filtered_cursor is None:
+            self._dwell_anchor = None
+            self._dwell_start = 0.0
+            self._dwell_fired = False
+            return
+
+        current = self._filtered_cursor.copy()
+        if self._dwell_anchor is None:
+            self._dwell_anchor = current
+            self._dwell_start = now
+            self._dwell_fired = False
+            return
+
+        motion = float(np.linalg.norm(current - self._dwell_anchor))
+        if motion > float(self._config.dwell_rearm_move_px):
+            self._dwell_anchor = current
+            self._dwell_start = now
+            self._dwell_fired = False
+            return
+
+        if primary_gesture.fist:
+            self._dwell_anchor = current
+            self._dwell_start = now
+            self._dwell_fired = False
+            return
+
+        if motion > float(self._config.dwell_radius_px):
+            self._dwell_start = now
+            self._dwell_fired = False
+            return
+
+        if not self._dwell_fired and (now - self._dwell_start) >= float(self._config.dwell_click_sec):
+            if self._check_cooldown("dwell_click", now, self._config.click_cooldown_sec):
+                self._mouse.click(Button.left, 1)
+                self._note_action(actions, "Dwell left click")
+                self._dwell_fired = True
+                self._cursor_lock_until = max(
+                    self._cursor_lock_until,
+                    now + float(self._config.click_cursor_lock_sec),
+                )
 
     def _handle_shortcuts(
         self,

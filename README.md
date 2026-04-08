@@ -87,6 +87,9 @@ python -m Air_Mouse.main --no-mirror
 
 # ask for GPU delegate (falls back automatically if unavailable when using auto)
 python -m Air_Mouse.main --delegate gpu
+
+# switch click interaction mode
+python -m Air_Mouse.main --interaction two_hand
 ```
 
 ### Air Mouse gestures
@@ -97,7 +100,13 @@ python -m Air_Mouse.main --delegate gpu
 - `Fist` -> click-and-drag while moving your hand
 - `Open palm (front to camera)` -> free pointer movement (no shortcut)
 - Pointer mapping now focuses on a smaller center camera region (boosted mapping), so you do not need to use the entire camera FOV to reach the full screen.
-- Click intent now applies micro-movement damping and a short pinch confirmation window for more reliable click registration.
+- Click intent now applies micro-movement damping, pinch hysteresis, and freeze windows for more reliable click registration.
+
+Interaction modes:
+
+- `--interaction pinch` (default): one-hand pointer + pinch clicks with anti-jitter freeze.
+- `--interaction two_hand`: one hand controls pointer, the other hand handles click gestures.
+- `--interaction dwell`: hold pointer steady for dwell-click (no pinch needed).
 
 Shortcut gestures (edge-triggered + cooldown protected):
 
