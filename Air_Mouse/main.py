@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from hand_tracker.tracker import HandTracker, TrackerConfig
+from hand_tracker.tensorrt_tracker import TensorRTHandTracker, TensorRTTrackerConfig
 
 from .controller import AirMouseConfig, AirMouseController
 
@@ -65,6 +66,13 @@ def parse_args() -> argparse.Namespace:
         help="MediaPipe inference delegate: auto, gpu, cpu",
     )
     parser.add_argument(
+        "--backend",
+        type=str,
+        default="mediapipe",
+        choices=["mediapipe", "onnx_trt"],
+        help="Tracking backend: mediapipe or onnx_trt (compatibility wrapper)",
+    )
+    parser.add_argument(
         "--interaction",
         type=str,
         default="pinch",
@@ -84,6 +92,7 @@ class AirMouseWindow(QMainWindow):
         mirror_x: bool = True,
         delegate: str = "auto",
         interaction_mode: str = "pinch",
+        backend: str = "mediapipe",
     ) -> None:
         super().__init__()
         self.setWindowTitle("Air Mouse Studio")
@@ -96,7 +105,8 @@ class AirMouseWindow(QMainWindow):
         tracker_config.inference_delegate = delegate.lower().strip()
         self._capture_profile = capture_profile
 
-        self._tracker = HandTracker(config=tracker_config)
+        self._backend_choice = backend.lower().strip()
+        self._tracker = self._create_tracker(tracker_config)
         self._controller = AirMouseController(
             AirMouseConfig(
                 control_hand_preference=control_hand,
@@ -128,6 +138,7 @@ class AirMouseWindow(QMainWindow):
         self._control_label = QLabel("Control hand --")
         self._action_label = QLabel("Last action Idle")
         self._delegate_label = QLabel(f"Delegate {self._tracker.inference_delegate_used.upper()}")
+        self._backend_label = QLabel(f"Backend {self._runtime_backend_label}")
 
         for badge in (
             self._fps_label,
@@ -136,6 +147,7 @@ class AirMouseWindow(QMainWindow):
             self._control_label,
             self._action_label,
             self._delegate_label,
+            self._backend_label,
         ):
             badge.setObjectName("Badge")
 
@@ -174,6 +186,9 @@ class AirMouseWindow(QMainWindow):
             "- two_hand: primary hand moves pointer, other hand clicks\n"
             "- dwell: hold pointer steady to click (no pinch needed)\n"
             "- dwell mode also supports quick index knuckle tap clicks\n\n"
+            "Backend\n"
+            "- mediapipe: current stable pipeline\n"
+            "- onnx_trt: compatibility wrapper path for future TensorRT engine\n\n"
             "Shortcuts\n"
             "- Open palm (front) is free movement only\n"
             "- Show desktop requires German three sign + short hold\n"
@@ -221,6 +236,16 @@ class AirMouseWindow(QMainWindow):
 
         return TrackerConfig(max_num_hands=2), (1280, 720, 45)
 
+    def _create_tracker(self, tracker_config: TrackerConfig):
+        if self._backend_choice == "onnx_trt":
+            self._runtime_backend_label = "ONNX_TRT"
+            return TensorRTHandTracker(
+                tracker_config=tracker_config,
+                trt_config=TensorRTTrackerConfig(enabled=True),
+            )
+        self._runtime_backend_label = "MEDIAPIPE"
+        return HandTracker(config=tracker_config)
+
     def _layout_ui(self) -> None:
         root = QWidget()
         self.setCentralWidget(root)
@@ -244,6 +269,7 @@ class AirMouseWindow(QMainWindow):
         top_bar_layout.addWidget(self._hands_label)
         top_bar_layout.addWidget(self._control_label)
         top_bar_layout.addWidget(self._delegate_label)
+        top_bar_layout.addWidget(self._backend_label)
         top_bar_layout.addWidget(self._action_label, stretch=1)
 
         left_layout.addWidget(top_bar)
@@ -423,7 +449,7 @@ class AirMouseWindow(QMainWindow):
 
         tracker_config, capture_profile = self._select_mode_config(target_mode)
         tracker_config.inference_delegate = self._tracker.inference_delegate_used
-        new_tracker = HandTracker(config=tracker_config)
+        new_tracker = self._create_tracker(tracker_config)
 
         self._tracker.close()
         self._tracker = new_tracker
@@ -431,6 +457,7 @@ class AirMouseWindow(QMainWindow):
         self._performance_mode = target_mode
         self._capture_profile = capture_profile
         self._delegate_label.setText(f"Delegate {self._tracker.inference_delegate_used.upper()}")
+        self._backend_label.setText(f"Backend {self._runtime_backend_label}")
         self._apply_capture_profile()
 
     def _on_control_hand_changed(self, hand_name: str) -> None:
@@ -464,6 +491,7 @@ def main() -> int:
             mirror_x=not args.no_mirror,
             delegate=args.delegate,
             interaction_mode=args.interaction,
+            backend=args.backend,
         )
     except RuntimeError as exc:
         QMessageBox.critical(None, "Air Mouse Error", str(exc))

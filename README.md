@@ -90,6 +90,9 @@ python -m Air_Mouse.main --delegate gpu
 
 # switch click interaction mode
 python -m Air_Mouse.main --interaction two_hand
+
+# backend path for future ONNX/TensorRT integration
+python -m Air_Mouse.main --backend onnx_trt
 ```
 
 ### Air Mouse gestures
@@ -127,6 +130,11 @@ Inference delegate:
 - `--delegate auto` tries GPU first, then CPU fallback.
 - `--delegate gpu` requires GPU delegate support and errors if unavailable.
 - `--delegate cpu` forces CPU inference.
+
+Backend option:
+
+- `--backend mediapipe` uses current MediaPipe tracker.
+- `--backend onnx_trt` enables a compatibility wrapper entrypoint for planned ONNX/TensorRT CUDA integration.
 
 Note: Air Mouse sends real OS mouse/keyboard events. On macOS/Linux you may need to grant accessibility/input-control permissions to your terminal or Python interpreter.
 
